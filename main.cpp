@@ -20,6 +20,8 @@ const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
 const int MAX_FRAMES_IN_FLIGHT = 2; // https://vulkan-tutorial.com/en/Drawing_a_triangle/Drawing/Frames_in_flight
 
+static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+
 static std::vector<char> readFile(std::string filename) {
 
     // Flags:
@@ -131,6 +133,11 @@ public:
         initVulkan();
         mainLoop();
         cleanup();
+    }
+    
+     void setFramebufferResized() {
+        framebufferResized = true;
+        std::cout << "FramebufferResized" << std::endl;
     }
     
 private:
@@ -313,6 +320,8 @@ private:
 
         VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
         VkPresentModeKHR presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
+        
+        // query the new window resolution to make sure that the swap chain images have the latest size
         VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
         
         // The implementation specifies the minimum number that it requires to function.
@@ -935,12 +944,22 @@ private:
      */
     void drawFrame() {
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-        vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
         // Acquiring an image from the swap chain
         // swap chain is an extension feature, so we must use a function with the vk*KHR naming convention
         uint32_t imageIndex;
-        vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+        VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+
+        // Suboptimal or out-of-date swap chain : https://vulkan-tutorial.com/en/Drawing_a_triangle/Swap_chain_recreation
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) { // possibly on window resize
+            recreateSwapChain();
+            return;
+        } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+            throw std::runtime_error("failed to acquire swap chain image!");
+        }
+
+        // Only reset the fence if we are submitting work
+        vkResetFences(device, 1, &inFlightFences[currentFrame]); // vkResetFences resets the fence to the unsignaled state.
 
         vkResetCommandBuffer(commandBuffers[currentFrame], /*VkCommandBufferResetFlagBits*/ 0);
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
@@ -979,13 +998,23 @@ private:
         presentInfo.pImageIndices = &imageIndex;
         presentInfo.pResults = nullptr; // Optional
 
-        vkQueuePresentKHR(presentQueue, &presentInfo);
+        // https://vulkan-tutorial.com/en/Drawing_a_triangle/Swap_chain_recreation
+        result = vkQueuePresentKHR(presentQueue, &presentInfo);
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized) {
+            framebufferResized = false;
+            recreateSwapChain();
+        } else if (result != VK_SUCCESS) {
+            throw std::runtime_error("failed to present swap chain image!");
+        }
         
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
     
     void cleanup() {
         std::cout << "cleanup" << std::endl;
+        
+        // cleanup swapChainFramebuffers, swapChainImageViews, v
+        cleanupSwapChain();
         
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
             vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
@@ -995,19 +1024,10 @@ private:
 
         vkDestroyCommandPool(device, commandPool, nullptr);
 
-        for (auto framebuffer : swapChainFramebuffers) {
-            vkDestroyFramebuffer(device, framebuffer, nullptr);
-        }
-        
         vkDestroyPipeline(device, graphicsPipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        vkDestroyRenderPass(device, renderPass, nullptr);
         
-        for (auto imageView : swapChainImageViews) {
-            vkDestroyImageView(device, imageView, nullptr);
-        }
-    
-        vkDestroySwapchainKHR(device, swapChain, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
         
         vkDestroyDevice(device, nullptr);
         
@@ -1035,6 +1055,9 @@ private:
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
         
         window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+        glfwSetWindowUserPointer(window, this);
+        // detect window resize callback
+        glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
     }
 
     std::vector<const char*> getRequiredExtensions() {
@@ -1051,6 +1074,39 @@ private:
 
         //extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
         return extensions;
+    }
+
+    // https://vulkan-tutorial.com/en/Drawing_a_triangle/Swap_chain_recreation
+    void cleanupSwapChain() {
+        // we don't recreate the renderpass here for simplicity.
+
+        for (auto framebuffer : swapChainFramebuffers) {
+        vkDestroyFramebuffer(device, framebuffer, nullptr);
+        }
+
+        for (auto imageView : swapChainImageViews) {
+            vkDestroyImageView(device, imageView, nullptr);
+        }
+
+        vkDestroySwapchainKHR(device, swapChain, nullptr);
+    }
+
+    // https://vulkan-tutorial.com/en/Drawing_a_triangle/Swap_chain_recreation
+    void recreateSwapChain() {
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(window, &width, &height);
+        
+        // Window minimization. This case is special because it will result in a frame buffer size of 0
+        while (width == 0 || height == 0) {
+            glfwGetFramebufferSize(window, &width, &height);
+            glfwWaitEvents();
+        }
+    
+        vkDeviceWaitIdle(device);
+
+        createSwapChain();
+        createImageViews();
+        createFramebuffers();
     }
 
     void createInstance() {
@@ -1213,7 +1269,14 @@ private:
     std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> inFlightFences;
     uint32_t currentFrame = 0;
+    
+    bool framebufferResized = false;
 };
+
+static void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
+    auto app = reinterpret_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
+    app->setFramebufferResized();
+}
 
 int main() {
     HelloTriangleApplication app;
@@ -1228,33 +1291,3 @@ int main() {
     
     return EXIT_SUCCESS;
 }
-
-/*int main(int argc, const char * argv[])
-{
-    // Initialize the GLFW library
-    if (!glfwInit())
-        return -1;
-    
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Vulkan window", nullptr, nullptr);
-
-    uint32_t extensionCount = 0;
-    vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
-
-    std::cout << extensionCount << " extensions supported\n";
-
-    glm::mat4 matrix;
-    glm::vec4 vec;
-    auto test = matrix * vec;
-
-    while(!glfwWindowShouldClose(window)) {
-        glfwPollEvents();
-    }
-
-    glfwDestroyWindow(window);
-
-    glfwTerminate();
-
-    return 0;
-        
-}*/
