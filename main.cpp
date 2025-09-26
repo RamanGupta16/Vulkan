@@ -864,50 +864,125 @@ private:
         //std::cout << "Recorded command buffer for swap chain imageIndex=" << imageIndex << std::endl;
     }
     
-    // https://vulkan-tutorial.com/en/Vertex_buffers/Vertex_buffer_creation
-    // GPU Memory Allocation
-    // Buffers in Vulkan are regions of memory used for storing arbitrary data that can be read by the graphics card
-    void createVertexBuffer() {
-    
+    // https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
+    // buffer creation helper function.
+    void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory) {
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = sizeof(vertices[0]) * vertices.size();
-        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // only used from the graphics queue and not shared between multiple queues
 
         // The flags parameter is used to configure sparse buffer memory, which is not relevant right now. Leave it at default 0.
         //bufferInfo.flags = 0;
 
-        if (vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer) != VK_SUCCESS) {
+        if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
             throw std::runtime_error("failed to create vertex buffer!");
         }
 
         // The first step of allocating memory for the buffer is to query its memory requirements
         VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
-
+        vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
+        
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-        std::cout << "VERTEX_BUFFER allocationSize=" << memRequirements.size << std::endl;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
         
-        // Allocate vertexBuffer memory
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &vertexBufferMemory) != VK_SUCCESS) {
+        // Allocate device memory
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemory) != VK_SUCCESS) {
             throw std::runtime_error("failed to allocate vertex buffer memory!");
         }
+        
+        std::cout << "VERTEX_BUFFER allocationSize=" << memRequirements.size << std::endl;
+        
+        // associate this bufferMemory with the buffer
+        vkBindBufferMemory(device, buffer, bufferMemory, 0);
+    }
+    
+    // https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
+    // Memory transfer operations are executed using command buffers, just like drawing commands.
+    void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+        // Memory transfer operations are executed using command buffers, just like drawing commands.
+        // Therefore we must first allocate a temporary command buffer.
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandPool = commandPool;
+        allocInfo.commandBufferCount = 1;
 
-        // associate this vertexBufferMemory with the vertexBuffer
-        vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+        VkCommandBuffer commandBuffer;
+        vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        // We're only going to use the command buffer once and wait with returning from the function until the copy operation has finished executing
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+        // Contents of buffers are transferred using the vkCmdCopyBuffer command.
+        VkBufferCopy copyRegion{};
+        copyRegion.srcOffset = 0; // Optional
+        copyRegion.dstOffset = 0; // Optional
+        copyRegion.size = size;
+        vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+        vkEndCommandBuffer(commandBuffer);
+
+        // execute the command buffer to complete the transfer:
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+
+        vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+        
+        // wait on this transfer to complete. We could use a fence and wait with vkWaitForFences,
+        // or simply wait for the transfer queue to become idle with vkQueueWaitIdle
+        vkQueueWaitIdle(graphicsQueue);
+
+        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    }
+
+    // https://vulkan-tutorial.com/en/Vertex_buffers/Vertex_buffer_creation
+    // https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
+    // GPU Memory Allocation
+    // Buffers in Vulkan are regions of memory used for storing arbitrary data that can be read by the graphics card
+    void createVertexBuffer() {
+        
+        VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+        
+        /*
+         In this chapter we're going to create two vertex buffers. One staging buffer in CPU accessible memory to
+         upload the data from the vertex array to, and the final vertex buffer in device (GPU) local memory.
+         We'll then use a buffer copy command to move the data from the staging buffer to the actual vertex buffer.
+        */
+        
+        // Using a staging buffer https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            stagingBuffer, stagingBufferMemory); // VK_BUFFER_USAGE_TRANSFER_SRC_BIT: Buffer can be used as source in a memory transfer operation.
 
         // Memory-mapped I/O
         void* data;
-        vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
-        memcpy(data, vertices.data(), (size_t) bufferInfo.size);
-        
-        vkUnmapMemory(device, vertexBufferMemory);
+        vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
+        memcpy(data, vertices.data(), (size_t) bufferSize);
+        vkUnmapMemory(device, stagingBufferMemory);
 
+        // The most optimal memory has the VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT memory proprty flag and is usually not accessible by the CPU
+        // The vertexBuffer is now allocated from a memory type that is device local.
+        // VK_BUFFER_USAGE_TRANSFER_DST_BIT: Buffer can be used as destination in a memory transfer operation.
+        createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertexBuffer, vertexBufferMemory);
+
+        // We can copy data from the stagingBuffer to the vertexBuffer
+        copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+        
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingBufferMemory, nullptr);
+    
         /*
         Unfortunately the driver may not immediately copy the data into the buffer memory, for example because of caching.
         It is also possible that writes to the buffer are not visible in the mapped memory yet.
@@ -1115,10 +1190,12 @@ private:
         // Only reset the fence if we are submitting work
         vkResetFences(device, 1, &inFlightFences[currentFrame]); // vkResetFences resets the fence to the unsignaled state.
 
+        // Create Command Buffer
         vkResetCommandBuffer(commandBuffers[currentFrame], /*VkCommandBufferResetFlagBits*/ 0);
         recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 
         // Queue submission and synchronization is configured through parameters in the VkSubmitInfo structure.
+        // Execute command buffer
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
