@@ -6,11 +6,12 @@
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <glm/glm.hpp>
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
 
 //#include <vulkan/vulkan.h>
-
+#include <array>
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -125,6 +126,65 @@ struct SwapChainSupportDetails {
     std::vector<VkPresentModeKHR> presentModes;
 };
 
+// Vertex data
+// https://vulkan-tutorial.com/en/Vertex_buffers/Vertex_input_description
+struct Vertex {
+    glm::vec2 pos;
+    glm::vec3 color;
+    
+    
+    /* tell Vulkan how to pass vertex data format to the vertex shader once it's been uploaded into GPU memory. */
+
+    // Binding descriptions
+    static VkVertexInputBindingDescription getBindingDescription() {
+        VkVertexInputBindingDescription bindingDescription{};
+        bindingDescription.binding = 0;
+        bindingDescription.stride = sizeof(Vertex);
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX; // per-vertex data
+
+        return bindingDescription;
+    }
+
+    // Attribute descriptions
+    static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions() {
+        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+
+        // Vertex shader layout(location = 0) in vec2 inPosition
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT; // vec2: VK_FORMAT_R32G32_SFLOAT
+        attributeDescriptions[0].offset = offsetof(Vertex, pos);
+
+        // Vertex shader layout(location = 1) in vec3 inColor
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT; // vec3: VK_FORMAT_R32G32B32_SFLOAT
+        attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+        return attributeDescriptions;
+    }
+
+    
+    
+};
+
+// interleaving vertex attributes
+/* Same as combined
+vec2 positions[3] = vec2[](
+    vec2(0.0, -0.5),
+    vec2(0.5, 0.5),
+    vec2(-0.5, 0.5) );
+vec3 colors[3] = vec3[](
+    vec3(1.0, 0.0, 0.0),
+    vec3(0.0, 1.0, 0.0),
+    vec3(0.0, 0.0, 1.0) );
+*/
+const std::vector<Vertex> vertices = {
+    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+};
+
 class HelloTriangleApplication {
 
 public:
@@ -154,6 +214,7 @@ private:
         createGraphicsPipeline(); //
         createFramebuffers();
         createCommandPool(); // https://vulkan-tutorial.com/en/Drawing_a_triangle/Drawing/Command_buffers
+        createVertexBuffer(); // https://vulkan-tutorial.com/en/Vertex_buffers/Vertex_buffer_creation
         createCommandBuffers();
         createSyncObjects();
     }
@@ -490,15 +551,15 @@ private:
 
         VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
         
-        // Because we're hard coding the vertex data directly in the vertex shader,
-        // we'll fill in this structure to specify that there is no vertex data to load for now.
-        // We'll get back to it in the vertex buffer chapter.
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
         vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertexInputInfo.vertexBindingDescriptionCount = 0;
-        vertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
-        vertexInputInfo.vertexAttributeDescriptionCount = 0;
-        vertexInputInfo.pVertexAttributeDescriptions = nullptr; // Optional
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription; // Optional
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data() ;
 
         /* Fixed-function state: all of the structures that define the fixed-function stages of the pipeline, like input assembly, rasterizer, viewport and color blendin */
         // Input assembly: We intend to draw triangles throughout this tutorial
@@ -786,8 +847,13 @@ private:
         scissor.extent = swapChainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+        // Binding the vertex buffer
+        VkBuffer vertexBuffers[] = {vertexBuffer};
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+            
         // draw command for the triangle:
-        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        vkCmdDraw(commandBuffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
 
         vkCmdEndRenderPass(commandBuffer);
 
@@ -795,7 +861,87 @@ private:
             throw std::runtime_error("failed to record command buffer!");
         }
         
-        std::cout << "Recorded command buffer for swap chain imageIndex=" << imageIndex << std::endl;
+        //std::cout << "Recorded command buffer for swap chain imageIndex=" << imageIndex << std::endl;
+    }
+    
+    // https://vulkan-tutorial.com/en/Vertex_buffers/Vertex_buffer_creation
+    // GPU Memory Allocation
+    // Buffers in Vulkan are regions of memory used for storing arbitrary data that can be read by the graphics card
+    void createVertexBuffer() {
+    
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = sizeof(vertices[0]) * vertices.size();
+        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // only used from the graphics queue and not shared between multiple queues
+
+        // The flags parameter is used to configure sparse buffer memory, which is not relevant right now. Leave it at default 0.
+        //bufferInfo.flags = 0;
+
+        if (vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create vertex buffer!");
+        }
+
+        // The first step of allocating memory for the buffer is to query its memory requirements
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        std::cout << "VERTEX_BUFFER allocationSize=" << memRequirements.size << std::endl;
+        
+        // Allocate vertexBuffer memory
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &vertexBufferMemory) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate vertex buffer memory!");
+        }
+
+        // associate this vertexBufferMemory with the vertexBuffer
+        vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+
+        // Memory-mapped I/O
+        void* data;
+        vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
+        memcpy(data, vertices.data(), (size_t) bufferInfo.size);
+        
+        vkUnmapMemory(device, vertexBufferMemory);
+
+        /*
+        Unfortunately the driver may not immediately copy the data into the buffer memory, for example because of caching.
+        It is also possible that writes to the buffer are not visible in the mapped memory yet.
+        
+        There are two ways to deal with that problem:
+        Use a memory heap that is host coherent, indicated with VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        Call vkFlushMappedMemoryRanges after writing to the mapped memory, and call vkInvalidateMappedMemoryRanges before reading from the mapped memory.
+        
+        We went for the first approach, which ensures that the mapped memory always matches the contents of the allocated memory.
+        Do keep in mind that this may lead to slightly worse performance than explicit flushing, but we'll see why that doesn't matter in the next chapter.
+
+        Flushing memory ranges or using a coherent memory heap means that the driver will be aware of our writes to the buffer,
+        but it doesn't mean that they are actually visible on the GPU yet. The transfer of data to the GPU is an operation that
+        happens in the background and the specification simply tells us that it is guaranteed to be complete as of the next call to vkQueueSubmit.
+        */
+    }
+    
+    // Graphics cards can offer different types of memory to allocate from.
+    // Each type of memory varies in terms of allowed operations and performance characteristics.
+    // We need to combine the requirements of the buffer and our own application requirements to find the right type of memory to use.
+    uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+        // The different types of memory exist within these heaps. Right now we'll only concern ourselves with
+        // the type of memory and not the heap it comes from, but you can imagine that this can affect performance.
+        VkPhysicalDeviceMemoryProperties memProperties;
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+            if ((typeFilter & (1 << i)) &&
+                (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+                return i;
+            }
+        }
+
+        throw std::runtime_error("failed to find suitable memory type!");
     }
     
     VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) {
@@ -901,7 +1047,7 @@ private:
      */
     void createSyncObjects() {
         imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-        renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+        renderFinishedSemaphores.resize(swapChainImages.size()); // see https://github.com/Overv/VulkanTutorial/issues/407
         inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
     
         // A semaphore is used to add order between queue operations.
@@ -923,11 +1069,19 @@ private:
 
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
             if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
-                vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
+                //vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
                 vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
                 throw std::runtime_error("failed to create synchronization objects for a frame!");
             }
         }
+        
+        // // see https://github.com/Overv/VulkanTutorial/issues/407
+        for (size_t i = 0; i < swapChainImages.size(); i++) {
+         if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
+           throw std::runtime_error(
+               "failed to create graphics synchronization objects for a frame!");
+         }
+    }
         
         // In summary, semaphores are used to specify the execution order of operations on the GPU while fences are used to keep the CPU and GPU in sync with each-other.
     }
@@ -977,7 +1131,7 @@ private:
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
 
-        VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
+        VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[imageIndex]}; // See https://github.com/Overv/VulkanTutorial/issues/407
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
 
@@ -1016,10 +1170,16 @@ private:
         // cleanup swapChainFramebuffers, swapChainImageViews, v
         cleanupSwapChain();
         
+        vkDestroyBuffer(device, vertexBuffer, nullptr);
+        vkFreeMemory(device, vertexBufferMemory, nullptr);
+
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+            //vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);  // See https://github.com/Overv/VulkanTutorial/issues/407
             vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
             vkDestroyFence(device, inFlightFences[i], nullptr);
+        }
+        for (size_t i = 0; i < swapChainImages.size(); i++) {
+            vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
         }
 
         vkDestroyCommandPool(device, commandPool, nullptr);
@@ -1264,6 +1424,9 @@ private:
     
     VkCommandPool commandPool;
     std::vector<VkCommandBuffer> commandBuffers;
+    
+    VkBuffer vertexBuffer;
+    VkDeviceMemory vertexBufferMemory;
     
     std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
