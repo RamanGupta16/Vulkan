@@ -9,6 +9,7 @@
 #include <glm/glm.hpp>
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 //#include <vulkan/vulkan.h>
 #include <array>
@@ -16,6 +17,7 @@
 #include <sstream>
 #include <fstream>
 #include <set>
+#include <chrono>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -132,7 +134,6 @@ struct Vertex {
     glm::vec2 pos;
     glm::vec3 color;
     
-    
     /* tell Vulkan how to pass vertex data format to the vertex shader once it's been uploaded into GPU memory. */
 
     // Binding descriptions
@@ -163,9 +164,6 @@ struct Vertex {
 
         return attributeDescriptions;
     }
-
-    
-    
 };
 
 // interleaving vertex attributes
@@ -199,6 +197,14 @@ const std::vector<uint16_t> indices = {
     2, 3, 0 // bottom-left triangle.
 };
 
+// https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_set_layout_and_buffer
+// Descriptor set layout
+struct UniformBufferObject {
+    glm::mat4 model;
+    glm::mat4 view;
+    glm::mat4 proj;
+};
+
 class HelloTriangleApplication {
 
 public:
@@ -225,11 +231,15 @@ private:
         createSwapChain();
         createImageViews(); // https://vulkan-tutorial.com/Drawing_a_triangle/Graphics_pipeline_basics/Fixed_functions
         createRenderPass(); // https://vulkan-tutorial.com/en/Drawing_a_triangle/Graphics_pipeline_basics/Render_passes
+        createDescriptorSetLayout();
         createGraphicsPipeline(); //
         createFramebuffers();
         createCommandPool(); // https://vulkan-tutorial.com/en/Drawing_a_triangle/Drawing/Command_buffers
         createVertexBuffer(); // https://vulkan-tutorial.com/en/Vertex_buffers/Vertex_buffer_creation
         createIndexBuffer();
+        createUniformBuffers();
+        createDescriptorPool(); // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_pool_and_sets
+        createDescriptorSets(); // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_pool_and_sets
         createCommandBuffers();
         createSyncObjects();
     }
@@ -532,6 +542,28 @@ private:
         }
     }
 
+    // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_set_layout_and_buffer
+    void createDescriptorSetLayout() {
+        // Uniform Buffer Object Descriptor set layout
+        // A resource descriptor is a way for shaders to freely access resources like buffers and images.
+        // We're going to set up a buffer that contains the MVP transformation matrices and have the vertex shader access them through a descriptor.
+        VkDescriptorSetLayoutBinding uboLayoutBinding{};
+        uboLayoutBinding.binding = 0;
+        uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        uboLayoutBinding.descriptorCount = 1;
+        uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        uboLayoutBinding.pImmutableSamplers = nullptr; // Optional. Only relevant for image sampling related descriptors
+        
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = &uboLayoutBinding;
+
+        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create descriptor set layout!");
+        }
+    }
+
     void createGraphicsPipeline() {
         // https://vulkan-tutorial.com/en/Drawing_a_triangle/Graphics_pipeline_basics/Shader_modules
         // The compilation and linking of the SPIR-V bytecode to machine code for execution by
@@ -615,7 +647,11 @@ private:
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL; // fill the area of the polygon with fragments
         rasterizer.lineWidth = 1.0f; // thickness of lines in terms of number of fragments.
         rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        
+        // because of the Y-flip we did in the projection matrix, the vertices are now being drawn in counter-clockwise order
+        // instead of clockwise order. This causes backface culling to kick in and prevents any geometry from being drawn
+        // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_pool_and_sets
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         rasterizer.depthBiasEnable = VK_FALSE;
         rasterizer.depthBiasConstantFactor = 0.0f; // Optional
         rasterizer.depthBiasClamp = 0.0f; // Optional
@@ -659,11 +695,10 @@ private:
         
         // Pipeline layout : uniform values need to be specified during pipeline creation by creating a VkPipelineLayout object.
         // These uniform values need to be specified during pipeline creation by creating a VkPipelineLayout object.
-        // Even though we won't be using them until a future chapter, we are still required to create an empty pipeline layout.
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 0; // Optional
-        pipelineLayoutInfo.pSetLayouts = nullptr; // Optional
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
         pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
         pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
 
@@ -873,10 +908,16 @@ private:
         // draw command for the triangle:
         //vkCmdDraw(commandBuffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
         
-        // change the drawing command to tell Vulkan to use the index buffer. Remove the vkCmdDraw line and replace it with vkCmdDrawIndexed:
+        // bind the right descriptor set for each frame to the descriptors in the shader
+        // Unlike vertex and index buffers, descriptor sets are not unique to graphics pipelines.
+        // Therefore we need to specify if we want to bind descriptor sets to the graphics or compute pipeline.
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
+
+        // change the drawing command to tell Vulkan to use the index buffer. Remove the vkCmdDraw line and replace it with vkCmdDrawIndexed
+        // Implict link between vertex and index array
         vkCmdDrawIndexed(commandBuffer,
                         static_cast<uint32_t>(indices.size()), // number of indices represents the number of vertices passed to the vertex shader.
-                        1, 0, 0, 0);
+                        1, 0, 0 /* vertexOffset */, 0);
 
 
         vkCmdEndRenderPass(commandBuffer);
@@ -1052,6 +1093,88 @@ private:
         vkFreeMemory(device, stagingBufferMemory, nullptr);
     }
     
+    // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_set_layout_and_buffer
+    void createUniformBuffers() {
+        // We're going to copy new data to the uniform buffer every frame, so it doesn't really make any sense to have a staging buffer.
+        
+        VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+
+        uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+        uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
+        uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
+
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uniformBuffers[i], uniformBuffersMemory[i]);
+
+            // The buffer stays mapped to this pointer for the application's whole lifetime. This technique is called "persistent mapping"
+            vkMapMemory(device, uniformBuffersMemory[i], 0, bufferSize, 0, &uniformBuffersMapped[i]);
+        }
+    }
+
+    // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_pool_and_sets
+    void createDescriptorPool() {
+        // create a descriptor set for each VkBuffer resource to bind it to the uniform buffer descriptor.
+        // Descriptor sets can't be created directly, they must be allocated from descriptor pool.
+        
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSize.descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT); // allocate one of these descriptors for every frame.
+
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT); // maximum number of descriptor sets
+
+        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create descriptor pool!");
+        }
+        
+        std::cout << "create descriptor pool" << std::endl;
+    }
+
+    // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_pool_and_sets
+    // // create a descriptor set for each VkBuffer (uniformBuffers) resource to bind it to the uniform buffer descriptor.
+    void createDescriptorSets() {
+
+        std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, descriptorSetLayout);
+        
+        // create one descriptor set for each frame in flight, all with the same layout.
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = descriptorPool;
+        allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        allocInfo.pSetLayouts = layouts.data();
+
+        descriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
+        if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate descriptor sets!");
+        }
+
+        std::cout << "create descriptor sets" << std::endl;
+        
+        // Configure descriptors
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            VkDescriptorBufferInfo bufferInfo{};
+            bufferInfo.buffer = uniformBuffers[i];
+            bufferInfo.offset = 0;
+            bufferInfo.range = sizeof(UniformBufferObject);
+
+            VkWriteDescriptorSet descriptorWrite{};
+            descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrite.dstSet = descriptorSets[i];
+            descriptorWrite.dstBinding = 0;
+            descriptorWrite.dstArrayElement = 0;
+            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            descriptorWrite.descriptorCount = 1;
+            descriptorWrite.pBufferInfo = &bufferInfo; // used for descriptors that refer to buffer data
+            descriptorWrite.pImageInfo = nullptr; // Optional
+            descriptorWrite.pTexelBufferView = nullptr; // Optional
+
+            vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+        }
+    }
+    
     // Graphics cards can offer different types of memory to allocate from.
     // Each type of memory varies in terms of allowed operations and performance characteristics.
     // We need to combine the requirements of the buffer and our own application requirements to find the right type of memory to use.
@@ -1202,17 +1325,47 @@ private:
             }
         }
         
-        // // see https://github.com/Overv/VulkanTutorial/issues/407
+        // see https://github.com/Overv/VulkanTutorial/issues/407
         for (size_t i = 0; i < swapChainImages.size(); i++) {
-         if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
-           throw std::runtime_error(
-               "failed to create graphics synchronization objects for a frame!");
-         }
-    }
-        
-        // In summary, semaphores are used to specify the execution order of operations on the GPU while fences are used to keep the CPU and GPU in sync with each-other.
+            if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
+               throw std::runtime_error(
+                   "failed to create graphics synchronization objects for a frame!");
+            }
+        }
+
+    // In summary, semaphores are used to specify the execution order of operations on the GPU while fences are used to keep the CPU and GPU in sync with each-other.
     }
 
+    // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_set_layout_and_buffer
+    void updateUniformBuffer(uint32_t currentImage) {
+        static auto startTime = std::chrono::high_resolution_clock::now();
+
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+
+        UniformBufferObject ubo{};
+        
+        // The model rotation will be a simple rotation around the Z-axis using the time variable
+        // geometry rotates 90 degrees per second regardless of frame rate.
+        ubo.model = glm::rotate(glm::mat4(1.0f) /*Identity Matrix*/, time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+        
+        // look at the geometry from above at a 45 degree angle. The glm::lookAt function takes the eye position, center position and up axis as parameters.
+        ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+        
+        // perspective projection with a 45 degree vertical field-of-view.
+        ubo.proj = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float) swapChainExtent.height, 0.1f, 10.0f);
+        
+        // GLM was originally designed for OpenGL, where the Y coordinate of the clip coordinates is inverted.
+        // The easiest way to compensate for that is to flip the sign on the scaling factor of the Y axis in the projection matrix.
+        // If you don't do this, then the image will be rendered upside down.
+        ubo.proj[1][1] *= -1;
+
+        // All of the transformations are defined now, so we can copy the data in the uniform buffer object to the current uniform buffer.
+        memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+        
+        std::cout << "updateUniformBuffer time=" << time << std::endl;
+    }
+    
     /*
     At a high level, rendering a frame in Vulkan consists of a common set of steps:
     1. Wait for the previous frame to finish
@@ -1238,6 +1391,9 @@ private:
         } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
             throw std::runtime_error("failed to acquire swap chain image!");
         }
+
+        // Update MVP Uniform
+        updateUniformBuffer(currentFrame);
 
         // Only reset the fence if we are submitting work
         vkResetFences(device, 1, &inFlightFences[currentFrame]); // vkResetFences resets the fence to the unsignaled state.
@@ -1320,6 +1476,15 @@ private:
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         
         vkDestroyRenderPass(device, renderPass, nullptr);
+        
+        // Free Uniform Buffer
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            vkDestroyBuffer(device, uniformBuffers[i], nullptr);
+            vkFreeMemory(device, uniformBuffersMemory[i], nullptr);
+        }
+        // You don't need to explicitly clean up descriptor sets, because they will be automatically freed when the descriptor pool is destroyed.
+        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+        vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
         
         vkDestroyDevice(device, nullptr);
         
@@ -1551,6 +1716,9 @@ private:
     std::vector<VkFramebuffer> swapChainFramebuffers;
     
     VkRenderPass renderPass; // https://vulkan-tutorial.com/Drawing_a_triangle/Graphics_pipeline_basics/Render_passes
+    
+    VkDescriptorSetLayout descriptorSetLayout; // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_set_layout_and_buffer
+    
     VkPipelineLayout pipelineLayout;
     VkPipeline graphicsPipeline;
     
@@ -1562,9 +1730,18 @@ private:
     VkBuffer indexBuffer;
     VkDeviceMemory indexBufferMemory;
     
+    std::vector<VkBuffer> uniformBuffers;
+    std::vector<VkDeviceMemory> uniformBuffersMemory;
+    std::vector<void*> uniformBuffersMapped;
+    
+    // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_pool_and_sets
+    VkDescriptorPool descriptorPool;
+    std::vector<VkDescriptorSet> descriptorSets;
+
     std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> inFlightFences;
+    
     uint32_t currentFrame = 0;
     
     bool framebufferResized = false;
