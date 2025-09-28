@@ -200,9 +200,9 @@ const std::vector<uint16_t> indices = {
 // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_set_layout_and_buffer
 // Descriptor set layout
 struct UniformBufferObject {
-    glm::mat4 model;
-    glm::mat4 view;
-    glm::mat4 proj;
+    alignas(16) glm::mat4 model;
+    alignas(16) glm::mat4 view;
+    alignas(16) glm::mat4 proj;
 };
 
 class HelloTriangleApplication {
