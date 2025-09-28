@@ -8,4 +8,5 @@ Rectangle (upper-right + bottom-left triangles) output for showing use of index 
 
 DescriptorSet_MVP_RotatingRectangle.mov output of updating MVP using uniform  Buffer using Descriptor Set from https://vulkan-tutorial.com/Uniform_buffers/Descriptor_pool_and_sets :
 
-![Rotating Rectangle Demo](https://raw.githubusercontent.com/RamanGupta16/Vulkan/main/images/DescriptorSet_MVP_RotatingRectangle.mp4)
+https://github.com/user-attachments/assets/1b7093d1-3967-43d5-a101-50e42e58146e
+
