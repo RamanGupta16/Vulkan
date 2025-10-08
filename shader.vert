@@ -1,11 +1,13 @@
 #version 450
 
+// Uniform Buffer
 layout(binding = 0) uniform UniformBufferObject {
     mat4 model;
     mat4 view;
     mat4 proj;
 } ubo;
 
+// Vertex Attributes
 layout(location = 0) in vec2 inPosition;
 layout(location = 1) in vec3 inColor;
 

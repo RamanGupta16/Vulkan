@@ -178,10 +178,11 @@ vec3 colors[3] = vec3[](
     vec3(0.0, 0.0, 1.0) );
 
 // triangle vertex
+{Position} {Color}
 const std::vector<Vertex> vertices = {
-    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}}, // v0 Top
+    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}}, // v1 bottom right
+    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}} // v2 bottom left
 };
 */
 // Rectangle (upper-right + bottom-left triangles) for showing use of index buffer https://vulkan-tutorial.com/en/Vertex_buffers/Index_buffer
@@ -545,7 +546,7 @@ private:
     // https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_set_layout_and_buffer
     void createDescriptorSetLayout() {
         // Uniform Buffer Object Descriptor set layout
-        // A resource descriptor is a way for shaders to freely access resources like buffers and images.
+        // A resource descriptor is a way for shaders to access resources like buffers and images.
         // We're going to set up a buffer that contains the MVP transformation matrices and have the vertex shader access them through a descriptor.
         VkDescriptorSetLayoutBinding uboLayoutBinding{};
         uboLayoutBinding.binding = 0;
@@ -733,6 +734,10 @@ private:
         std::cout << "Created Graphics Pipeline" << std::endl;
     }
 
+    void pushConstants() {
+        VkPushConstantRange pc{};
+    }
+    
     /*void createComputePipeline() {
         auto computeShaderCode = readFile("shaders/comp.spv");
 
@@ -875,6 +880,8 @@ private:
         renderPassInfo.pClearValues = &clearColor;
 
         // Drawing starts by beginning the render pass with vkCmdBeginRenderPass
+        // Draw commands must be recorded within a render pass instance.
+        // Each render pass instance defines a set of image resources, referred to as attachments, used during rendering.
         // VK_SUBPASS_CONTENTS_INLINE : render pass commands will be embedded in the primary command buffer itself and no secondary command buffers will be executed.
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -908,7 +915,7 @@ private:
         // draw command for the triangle:
         //vkCmdDraw(commandBuffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
         
-        // bind the right descriptor set for each frame to the descriptors in the shader
+        // Uniform Buffer descriptor set. bind the right descriptor set for each frame to the descriptors in the shader
         // Unlike vertex and index buffers, descriptor sets are not unique to graphics pipelines.
         // Therefore we need to specify if we want to bind descriptor sets to the graphics or compute pipeline.
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
@@ -918,7 +925,6 @@ private:
         vkCmdDrawIndexed(commandBuffer,
                         static_cast<uint32_t>(indices.size()), // number of indices represents the number of vertices passed to the vertex shader.
                         1, 0, 0 /* vertexOffset */, 0);
-
 
         vkCmdEndRenderPass(commandBuffer);
 
@@ -930,7 +936,7 @@ private:
     }
     
     // https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
-    // buffer creation helper function.
+    // buffer creation helper function. Sort of equivalent to vmaCreateBuffer()
     void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory) {
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -963,6 +969,8 @@ private:
         
         // associate this bufferMemory with the buffer
         vkBindBufferMemory(device, buffer, bufferMemory, 0);
+        
+        /* VMA vmaCreateBuffer() does three things : vkCreateBuffer, vkAllocateMemory and vkBindBufferMemory */
     }
     
     // https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
@@ -991,6 +999,7 @@ private:
         copyRegion.srcOffset = 0; // Optional
         copyRegion.dstOffset = 0; // Optional
         copyRegion.size = size;
+        
         vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
 
         vkEndCommandBuffer(commandBuffer);
@@ -1019,12 +1028,12 @@ private:
         VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
         
         /*
-         In this chapter we're going to create two vertex buffers. One staging buffer in CPU accessible memory to
+         In this chapter we're going to create two vertex buffers. One staging buffer in host (CPU) accessible memory to
          upload the data from the vertex array to, and the final vertex buffer in device (GPU) local memory.
          We'll then use a buffer copy command to move the data from the staging buffer to the actual vertex buffer.
         */
         
-        // Using a staging buffer https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
+        // Using a staging buffer as source (usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT) https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
         createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -1038,7 +1047,7 @@ private:
 
         // The most optimal memory has the VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT memory proprty flag and is usually not accessible by the CPU
         // The vertexBuffer is now allocated from a memory type that is device local.
-        // VK_BUFFER_USAGE_TRANSFER_DST_BIT: Buffer can be used as destination in a memory transfer operation.
+        // VK_BUFFER_USAGE_TRANSFER_DST_BIT: Buffer is a destination in a memory transfer operation and also vertex buffer (VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
         createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertexBuffer, vertexBufferMemory);
 
@@ -1175,6 +1184,36 @@ private:
         }
     }
     
+    void calculateVRAM(VkPhysicalDeviceMemoryProperties memProperties)
+    {
+        uint64_t totalVRAM = 0;
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; ++i)
+        {
+            const auto& memoryType = memProperties.memoryTypes[i];
+            if (memoryType.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            {
+                for (uint32_t j = 0; j < memProperties.memoryHeapCount; ++j)
+                {
+                    const auto& memoryHeap = memProperties.memoryHeaps[j];
+                    if (memoryType.heapIndex == j)
+                    {
+                        totalVRAM += memoryHeap.size;
+                    }
+                }
+            }
+        }
+
+        std::cout << "vramInMB = " << totalVRAM / (1024 * 1024) << " MB" << std::endl;
+        
+        VkDeviceSize vramBytes = 0;
+        for (uint32_t i = 0; i < memProperties.memoryHeapCount; ++i) {
+            if (memProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+                vramBytes += memProperties.memoryHeaps[i].size;  // nominal capacity
+            }
+        }
+        std::cout << "vramBytes = " << vramBytes / (1024 * 1024) << " MB" << std::endl;
+    }
+    
     // Graphics cards can offer different types of memory to allocate from.
     // Each type of memory varies in terms of allowed operations and performance characteristics.
     // We need to combine the requirements of the buffer and our own application requirements to find the right type of memory to use.
@@ -1184,6 +1223,8 @@ private:
         VkPhysicalDeviceMemoryProperties memProperties;
         vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
 
+        calculateVRAM(memProperties);
+        
         for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
             if ((typeFilter & (1 << i)) &&
                 (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
